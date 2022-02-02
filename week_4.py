@@ -1,3 +1,4 @@
+import atexit
 import sys
 sys.path.insert(0, './lib')
 import time
@@ -6,7 +7,9 @@ import concurrent.futures
 import numpy as np
 
 from readerwriterlock import rwlock
-from .week_3 import PhotoSensor, PhotoInterpreter, LineController
+from utils import reset_mcu
+from week_3 import PhotoSensor, PhotoInterpreter, LineController
+import traceback
 
 class Bus:
     def __init__(self, size):
@@ -17,37 +20,52 @@ class Bus:
         with self.lock.gen_wlock():
             self.data = value
 
-    def read(self, key):
+    def read(self):
         with self.lock.gen_rlock():
-            return self.data
+            data = self.data
+        return data
 
-def sensor_producer(bus, dt=1e-1):
-    sensor = Sensor()
+def sensor_producer(bus, dt=5e-1):
+    sensor = PhotoSensor()
     while True:
-        bus.write('reading', sensor.read())
+        bus.write(sensor.read())
         time.sleep(dt)
 
 def interpreter_consumerproducer(bus_in, bus_out, dt=1e-1):
-    interpreter = Interpreter(sensitivity=10)
-    while True:
-        bus_out.write('position', interpreter.interpret(bus_in.read('reading')))
-        time.sleep(dt)
+    try:
+        interpreter = PhotoInterpreter(sensitivity=10)
+        while True:
+            pos = interpreter.interpret(bus_in.read())
+            print("line is", pos)
+            bus_out.write(pos)
+            time.sleep(dt)
+    except:
+        traceback.print_exc()
 
 def line_controller_consumer(bus, dt=1e-1):
-    controller = LineController(steering_gain=1)
-    while True:
-        controller.follow_line(bus.read('position'))
-        time.sleep(dt)
+    try:
+        controller = LineController(steering_gain=25)
+        while True:
+            pos = bus.read()
+            print("Following line", pos)
+            controller.follow_line(pos)
+            time.sleep(dt)
+    except:
+        traceback.print_exc()
 
 if __name__ == '__main__':
     reset_mcu()
 
-    sensor_bus = Bus(1)
+    def clean():
+        LineController().cleanup()
+    atexit.register(clean)
+
+    sensor_bus = Bus(3)
     interp_bus = Bus(1)
-    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
-        esensor = executor.submit(sensor_producer, sensor_bus, 1e-1)
-        einterp = executor.submit(interpreter_consumerproducer, sensor_bus, interp_bus, 1e-1)
-        econtrol = executor.submit(line_controller_consumer, interp_bus, 1e-1)
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3) as executor:
+        esensor = executor.submit(sensor_producer, sensor_bus, 1e-3)
+        einterp = executor.submit(interpreter_consumerproducer, sensor_bus, interp_bus, 1e-3)
+        econtrol = executor.submit(line_controller_consumer, interp_bus, 1e-2)
     esensor.result()
     einterp.result()
     econtrol.result()
